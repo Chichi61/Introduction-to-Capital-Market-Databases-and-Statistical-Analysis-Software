@@ -1,0 +1,297 @@
+--------------------------------------------------------------------------------------------------------------------------------
+      name:  <unnamed>
+       log:  /Users/gohanpahlevi/Documents/Introduction to Capital Market Databases and Statistical Analysis Software/2nd Versio
+> n.log
+  log type:  text
+ opened on:  12 Dec 2024, 20:05:48
+
+. 
+. // Data Processing and Outlier Handling
+. duplicates report // checking duplicates
+
+Duplicates in terms of all variables
+
+--------------------------------------
+   Copies | Observations       Surplus
+----------+---------------------------
+        1 |      2046068             0
+--------------------------------------
+
+. 
+. sort PERMCO PERMNO // validating one-to-one mapping between PERMCO and PERMNO
+
+. bysort PERMCO: gen tag = cond(PERMNO == PERMNO[_n-1], 0, 1)
+
+. bysort PERMCO: egen unique_permno_count = total(tag)
+
+. tabulate unique_permno_count
+
+unique_perm |
+   no_count |      Freq.     Percent        Cum.
+------------+-----------------------------------
+          1 |  2,002,303       97.86       97.86
+          2 |     26,631        1.30       99.16
+          3 |      9,023        0.44       99.60
+          6 |      8,111        0.40      100.00
+------------+-----------------------------------
+      Total |  2,046,068      100.00
+
+. keep if unique_permno_count == 1
+(43,765 observations deleted)
+
+. 
+. *misstable summarize
+. *summarize RET , detail
+. *summarize vwretd, detail
+. *graph box RET 
+. *graph box vwretd
+. *hist RET,normal
+. *hist vwretd, normal
+. 
+. // Create year-month variable for grouping
+. gen month_of_date = mofd(date) // Convert daily date to year-month format
+
+. format month_of_date %tm 
+
+. 
+. // 2% winsorization to deal with outliers
+. winsor2 RET, cut(2 98) replace
+
+. winsor2 vwretd, cut(2 98) replace
+
+. 
+. // Checking the missing values
+. count if missing(RET)
+  786
+
+. count if missing(vwretd)
+  0
+
+. 
+. // Interpolation to deal with missing values
+. *⁠ispolation
+. xtset PERMCO date
+
+Panel variable: PERMCO (unbalanced)
+ Time variable: date, 02jan1963 to 31dec2019, but with gaps
+         Delta: 1 day
+
+. csipolate RET date, generate(ret_csi)
+
+. 
+. // Selecting only months with at least 20 valid trading days to improve accuracy
+. sort PERMCO PERMNO month_of_date
+
+. egen count_nonmissing_RET = count(RET), by(PERMCO PERMNO month_of_date)
+
+. gen dummy_RET_20 = count_nonmissing_RET >= 20
+
+. keep if dummy_RET_20 == 1
+(446,248 observations deleted)
+
+. 
+. // Generate signed returns
+. gen r_plus = cond(RET > 0, RET, 0)
+(48 missing values generated)
+
+. gen r_minus = cond(RET < 0, RET, 0)
+
+. gen f_plus = cond(vwretd > 0, vwretd, 0)
+
+. gen f_minus = cond(vwretd < 0, vwretd, 0)
+
+. 
+. // Calculate covariances in line with the article formula
+. gen cov_n = r_minus * f_minus
+
+. gen cov_p = r_plus * f_plus
+(48 missing values generated)
+
+. gen cov_mplus = r_minus * f_plus
+
+. gen cov_mminus = r_plus * f_minus
+(48 missing values generated)
+
+. 
+. // Calculate squared market returns
+. gen f_squared = vwretd^2
+
+. 
+. // Aggregate values by PERMNO and year_month, summing covariances
+. bysort PERMNO month_of_date: egen cov_n_sum = total(cov_n)
+
+. bysort PERMNO month_of_date: egen cov_p_sum = total(cov_p)
+
+. bysort PERMNO month_of_date: egen cov_mplus_sum = total(cov_mplus)
+
+. bysort PERMNO month_of_date: egen cov_mminus_sum = total(cov_mminus)
+
+. bysort PERMNO month_of_date: egen f_squared_sum = total(f_squared)
+
+. 
+. // Aggregate the return to convert daily data to monthly format
+. bysort PERMNO month_of_date: egen monthly_ret = total(RET)
+
+. 
+. // Calculate the traditional and semibetas in line with the article formula
+. gen beta_n = cov_n_sum / f_squared_sum
+
+. gen beta_p = cov_p_sum / f_squared_sum
+
+. gen beta_mplus = -cov_mplus_sum / f_squared_sum
+
+. gen beta_mminus = -cov_mminus_sum / f_squared_sum
+
+. gen beta_trad = beta_n+ beta_p- beta_mplus- beta_mminus
+
+. 
+. // Drop temporary variables
+. *drop cov_n_sum cov_p_sum cov_mplus_sum cov_mminus_sum f_squared_sum
+. 
+. // Keep only the last row for each group to avoid duplication
+. sort PERMCO month_of_date
+
+. bysort PERMCO month_of_date (date): keep if _n == _N
+(1,482,739 observations deleted)
+
+. 
+. // Generate future return as the lag of RET
+. xtset PERMCO month_of_date
+
+Panel variable: PERMCO (unbalanced)
+ Time variable: month_of_date, 1963m1 to 2019m12, but with gaps
+         Delta: 1 month
+
+. gen future_monthly_return= F.monthly_ret
+(13,473 missing values generated)
+
+. 
+. // Result Analysis for Table 1 (summary statistics) comparison
+. pwcorr beta_n beta_p beta_mplus beta_mminus, sig star(0.05)
+
+             |   beta_n   beta_p beta~lus beta~nus
+-------------+------------------------------------
+      beta_n |   1.0000 
+             |
+             |
+      beta_p |   0.1006*  1.0000 
+             |   0.0000
+             |
+  beta_mplus |   0.0348*  0.2434*  1.0000 
+             |   0.0000   0.0000
+             |
+ beta_mminus |   0.0517*  0.1277*  0.3687*  1.0000 
+             |   0.0000   0.0000   0.0000
+             |
+
+. pwcorr beta_trad beta_n beta_p beta_mplus beta_mminus, sig star(0.05)
+
+             | beta_t~d   beta_n   beta_p beta~lus beta~nus
+-------------+---------------------------------------------
+   beta_trad |   1.0000 
+             |
+             |
+      beta_n |   0.5528*  1.0000 
+             |   0.0000
+             |
+      beta_p |   0.6036*  0.1006*  1.0000 
+             |   0.0000   0.0000
+             |
+  beta_mplus |  -0.3780*  0.0348*  0.2434*  1.0000 
+             |   0.0000   0.0000   0.0000
+             |
+ beta_mminus |  -0.3758*  0.0517*  0.1277*  0.3687*  1.0000 
+             |   0.0000   0.0000   0.0000   0.0000
+             |
+
+. tabstat beta_trad beta_n beta_p beta_mplus beta_mminus, stats(mean median sd)
+
+   Stats |  beta_t~d    beta_n    beta_p  beta~lus  beta~nus
+---------+--------------------------------------------------
+    Mean |  .9219817  .6263809  .8289513  .3129012  .2204494
+     p50 |  .8905772  .5415946  .6864771  .1851982  .1244396
+      SD |  .8720462   .448689  .6123754  .3888918  .2857596
+------------------------------------------------------------
+
+. 
+. // Fama-Macbeth Regression for traditional and semibeta 
+. xtfmb future_monthly_return beta_trad
+
+Fama-MacBeth (1973) Two-Step procedure           Number of obs     =     59843
+                                                 Num. time periods =       521
+                                                 F(  1,   520)     =      0.82
+                                                 Prob > F          =    0.3645
+                                                 avg. R-squared    =    0.0449
+------------------------------------------------------------------------------
+             |            Fama-MacBeth
+future_mon~n | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+   beta_trad |    .003359   .0037006     0.91   0.364     -.003911    .0106289
+       _cons |   .0119138   .0029408     4.05   0.000     .0061365    .0176911
+------------------------------------------------------------------------------
+
+
+. xtfmb future_monthly_return beta_n beta_p beta_mplus beta_mminus
+
+Fama-MacBeth (1973) Two-Step procedure           Number of obs     =     59843
+                                                 Num. time periods =       521
+                                                 F(  4,   520)     =      2.23
+                                                 Prob > F          =    0.0643
+                                                 avg. R-squared    =    0.1473
+------------------------------------------------------------------------------
+             |            Fama-MacBeth
+future_mon~n | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+      beta_n |  -.0153146   .0169213    -0.91   0.366    -.0485572    .0179279
+      beta_p |  -.0047338   .0046433    -1.02   0.308    -.0138557    .0043881
+  beta_mplus |   .0163875   .0222944     0.74   0.463    -.0274106    .0601856
+ beta_mminus |  -.0138944   .0060906    -2.28   0.023    -.0258595   -.0019293
+       _cons |   .0227105   .0098975     2.29   0.022     .0032665    .0421544
+------------------------------------------------------------------------------
+
+
+. 
+. // Creating matrix for semibetas coefficients
+. matrix list e(b)
+
+e(b)[1,5]
+         beta_n       beta_p   beta_mplus  beta_mminus        _cons
+y1   -.01531462   -.00473379    .01638749   -.01389441    .02271046
+
+. matrix coeffs = e(b)
+
+. 
+. // Extract semibetas coefficients and multiplying with 12 to annualize
+. scalar annualized_risk_premium_n = coeffs[1,1] * 12
+
+. scalar annualized_risk_premium_p = coeffs[1,2] * 12
+
+. scalar annualized_risk_premium_mplus = coeffs[1,3] * 12
+
+. scalar annualized_risk_premium_mminus = coeffs[1,4] * 12
+
+. 
+. // Display results similar with the article format
+. di "Annualized Risk Premiums:"
+Annualized Risk Premiums:
+
+. di "Beta_n: " annualized_risk_premium_n
+Beta_n: -.18377548
+
+. di "Beta_p: " annualized_risk_premium_p
+Beta_p: -.05680544
+
+. di "Beta_mplus: " annualized_risk_premium_mplus
+Beta_mplus: .19664986
+
+. di "Beta_mminus: " annualized_risk_premium_mminus
+Beta_mminus: -.16673294
+
+. 
+. log close
+      name:  <unnamed>
+       log:  /Users/gohanpahlevi/Documents/Introduction to Capital Market Databases and Statistical Analysis Software/2nd Versio
+> n.log
+  log type:  text
+ closed on:  12 Dec 2024, 20:06:06
+--------------------------------------------------------------------------------------------------------------------------------
